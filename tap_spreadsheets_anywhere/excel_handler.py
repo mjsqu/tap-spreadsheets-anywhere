@@ -31,7 +31,29 @@ def generator_wrapper(reader):
 
         yield to_return
 
+
 def get_legacy_row_iterator(table_spec, file_handle):
+  
+    # For openpyxl, we were able to easily flip from __iter__
+    # to iterrows() which takes arguments of min_row, max_row, min_col, max_col
+    # perhaps extend sheet.get_rows() so it can take those arguments
+    def legacy_shim(xlrd_rows):
+        rows = []
+        for row_number, row in enumerate(xlrd_rows):
+            if row_number+1 >= table_spec.get('min_row'):
+                columns = []
+                for column_number, cell in enumerate(row):
+                    if ( table_spec.get('min_col',1) <=
+                         column_number+1 <=
+                         table_spec.get('max_col',1000000)
+                        ):
+                        columns.append(cell)
+            
+            if table_spec.get('max_row') and 
+              row_number + 1 > table_spec.get('max_row',0):
+                return to_return
+                break
+    
     workbook = xlrd.open_workbook(on_demand=True,file_contents=file_handle.read())
     if "worksheet_name" in table_spec:
         try:
@@ -58,7 +80,7 @@ def get_legacy_row_iterator(table_spec, file_handle):
         except Exception as e:
             LOGGER.info(e)
             sheet = workbook.sheet_by_name(sheet_name_list[0])
-    return generator_wrapper(sheet.get_rows())
+    return generator_wrapper(legacy_shim(sheet.get_rows()))
 
 
 def get_row_iterator(table_spec, file_handle):
@@ -88,4 +110,11 @@ def get_row_iterator(table_spec, file_handle):
         except Exception as e:
             LOGGER.info(e)
             active_sheet = worksheets[0]
-    return generator_wrapper(active_sheet)
+    return generator_wrapper(
+              active_sheet.iter_rows(
+                min_row=table_spec.get('min_row'),
+                max_row=table_spec.get('max_row'),
+                min_col=table_spec.get('min_col'),
+                max_col=table_spec.get('max_col'),
+                )
+    )
