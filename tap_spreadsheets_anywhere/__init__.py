@@ -13,6 +13,8 @@ import tap_spreadsheets_anywhere.conversion as conversion
 import tap_spreadsheets_anywhere.file_utils as file_utils
 
 LOGGER = logging.getLogger(__name__)
+if os.environ.get('LOGGING_CONF_FILE'):
+    logging.config.fileConfig(os.environ.get('LOGGING_CONF_FILE'), disable_existing_loggers=False)
 
 def get_abs_path(path):
     return os.path.join(os.path.dirname(os.path.realpath(__file__)), path)
