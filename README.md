@@ -55,10 +55,12 @@ The configuration is also captured in [tables_config_util.py](tap_spreadsheets_a
             "delimiter": "|",
             "quotechar": '"',
             "universal_newlines": false,
+            "skip_initial": 0,
             "sample_rate": 10,
             "max_sampling_read": 2000,
             "max_sampled_files": 3,
             "prefer_number_vs_integer": true,
+            "prefer_schema_as_string": true,
             "selected": true,
 
             // for any field in the table, you can hardcode the json schema datatype to override
@@ -96,16 +98,19 @@ Each object in the 'tables' array describes one or more CSV or Excel spreadsheet
 - **pattern**: This is an escaped regular expression that the tap will use to filter the listing result set returned from the listing request. This pattern potentially reduces the number of listed files that are considered as sources for the declared table. It's a bit strange, since this is an escaped string inside of an escaped string, any backslashes in the RegEx will need to be double-escaped.
 - **start_date**: This is the datetime that the tap will use to filter files, based on the modified timestamp of the file.
 - **key_properties**: These are the "primary keys" of the CSV files, to be used by the target for deduplication and primary key definitions downstream in the destination.
-- **format**: Must be either 'csv', 'json', 'excel', or 'detect'. Note that csv can be further customized with delimiter and quotechar variables below.
+- **format**: Must be either 'csv', 'json', 'jsonl' ([JSON Lines](https://jsonlines.org/)), 'excel', or 'detect'. Note that csv can be further customized with delimiter and quotechar variables below.
 - **invalid_format_action**: (optional) By default, the tap will raise an exception if a source file can not be read
 . Set this key to "ignore" to skip such source files and continue the run.  
 - **field_names**: (optional) An array holding the names of the columns in the targeted files. If not supplied, the first row of each file must hold the desired values. 
+- **encoding**: (optional) The file encoding to use when reading text files (i.e., "utf-8" (default), "latin1", "windows-1252")
 - **universal_newlines**: (optional) Should the source file parsers honor [universal newlines](https://docs.python.org/2.3/whatsnew/node7.html)). Setting this to false will instruct the parser to only consider '\n' as a valid newline identifier.
+- **skip_initial**: (optional) How many lines should be skipped. The default is 0.
 - **sample_rate**: (optional) The sampling rate to apply when reading a source file for sampling in discovery mode. A sampling rate of 1 will sample every line.  A sampling rate of 10 (the default) will sample every 10th line.
 - **max_sampling_read**: (optional) How many lines of the source file should be sampled when in discovery mode attempting to infer a schema. The default is 1000 samples.
 - **max_sampled_files**: (optional) The maximum number of files in the targeted set that will be sampled. The default is 5.
 - **max_records_per_run**: (optional) The maximum number of records that should be written to this stream in a single sync run. The default is unlimited. 
 - **prefer_number_vs_integer**: (optional) If the discovery mode sampling process sees only integer values for a field, should `number` be used anyway so that floats are not considered errors? The default is false but true can help in situations where floats only appear rarely in sources and may not be detected through discovery sampling.
+- **prefer_schema_as_string**: (optional) Bool value either as true or false (default). Should the schema be all read as string by default.
 - **selected**: (optional) Should this table be synced. Defaults to true. Setting to false will skip this table on a sync run.
 - **worksheet_name**: (optional) the worksheet name to pull from in the targeted xls file(s). Only required when format is excel
 - **delimiter**: (optional) the delimiter to use when format is 'csv'. Defaults to a comma ',' but you can set delimiter to 'detect' to leverage the csv "Sniffer" for auto-detecting delimiter. 
@@ -141,11 +146,19 @@ meltano elt --catalog=my-catalog.json --job_id=my-job-state tap-spreadsheets-any
 ### JSON support
 
 JSON files are expected to parse as a root-level array of objects where each object is a set of flat key-value pairs.
-```
+```json
 [
     { "name": "row one", "key": 42},
     { "name": "row two", "key": 43}
 ]
+``` 
+
+### JSONL (JSON Lines) support
+
+JSONL files are expected to parse as one object per line, where each row in a file is a set of key-value pairs.
+```jsonl
+{ "name": "row one", "key": 42}
+{ "name": "row two", "key": 43}
 ``` 
 
 ### Authentication and Credentials

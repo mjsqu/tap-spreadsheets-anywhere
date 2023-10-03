@@ -4,7 +4,9 @@ from codecs import StreamReader
 import tap_spreadsheets_anywhere.csv_handler
 import tap_spreadsheets_anywhere.excel_handler
 import tap_spreadsheets_anywhere.json_handler
-
+import tap_spreadsheets_anywhere.jsonl_handler
+from azure.storage.blob import BlobServiceClient
+import os
 
 class InvalidFormatError(Exception):
     def __init__(self, fname, message="The file was not in the expected format"):
@@ -16,8 +18,22 @@ class InvalidFormatError(Exception):
         return f'{self.name} could not be parsed: {self.message}'
 
 
-def get_streamreader(uri, universal_newlines=True,newline='',open_mode='r'):
-    streamreader = smart_open.open(uri, open_mode, newline=newline, errors='surrogateescape')
+def get_streamreader(uri, universal_newlines=True, newline='', open_mode='r', encoding='utf-8'):
+    kwarg_dispatch = {
+        "azure": lambda: {
+            "transport_params": {
+                "client": BlobServiceClient.from_connection_string(
+                    os.environ['AZURE_STORAGE_CONNECTION_STRING'],
+                )
+            }
+        },
+    }
+
+    SCHEME_SEP = "://"
+    kwargs = kwarg_dispatch.get(uri.split(SCHEME_SEP, 1)[0], lambda: {})()
+
+    streamreader = smart_open.open(uri, open_mode, newline=newline, errors='surrogateescape', encoding=encoding, **kwargs)
+
     if not universal_newlines and isinstance(streamreader, StreamReader):
         return monkey_patch_streamreader(streamreader)
     return streamreader
@@ -30,8 +46,8 @@ def monkey_patch_streamreader(streamreader):
 
 
 def mp_readline(self, size=None, keepends=False):
-    """ 
-        Modified version of readline for StreamReader that avoids the use of splitlines 
+    """
+        Modified version of readline for StreamReader that avoids the use of splitlines
         in favor of a call to split(self.mp_newline)
         This supports poorly formatted CSVs that the author has sadly seen in the wild
         from commercial vendors.
@@ -105,6 +121,8 @@ def mp_readline(self, size=None, keepends=False):
 
 def get_row_iterator(table_spec, uri):
     universal_newlines = table_spec['universal_newlines'] if 'universal_newlines' in table_spec else True
+    encoding = table_spec['encoding'] if 'encoding' in table_spec else 'utf-8'
+    skip_initial = table_spec.get("skip_initial", 0)
 
     if 'format' not in table_spec or table_spec['format'] == 'detect':
         lowered_uri = uri.lower()
@@ -112,11 +130,13 @@ def get_row_iterator(table_spec, uri):
             format = 'excel'
         elif lowered_uri.endswith(".json") or lowered_uri.endswith(".js"):
             format = 'json'
+        elif lowered_uri.endswith(".jsonl"):
+            format = 'jsonl'
         elif lowered_uri.endswith(".csv"):
             format = 'csv'
         else:
             # TODO: some protocols provide the ability to pull format (content-type) info & we could make use of that here
-            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r')
+            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding)
             buf = reader.read(10)
             reader.seek(0)
             if len(buf) > 0:
@@ -134,17 +154,24 @@ def get_row_iterator(table_spec, uri):
 
     try:
         if format == 'csv':
-            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r')
-            return tap_spreadsheets_anywhere.csv_handler.get_row_iterator(table_spec, reader)
+            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding)
+            iterator = tap_spreadsheets_anywhere.csv_handler.get_row_iterator(table_spec, reader)
         elif format == 'excel':
             reader = get_streamreader(uri, universal_newlines=universal_newlines,newline=None, open_mode='rb')
             if uri.lower().endswith(".xls"):
-                return tap_spreadsheets_anywhere.excel_handler.get_legacy_row_iterator(table_spec, reader)
+                iterator = tap_spreadsheets_anywhere.excel_handler.get_legacy_row_iterator(table_spec, reader)
             else:
-                return tap_spreadsheets_anywhere.excel_handler.get_row_iterator(table_spec, reader)
+                iterator = tap_spreadsheets_anywhere.excel_handler.get_row_iterator(table_spec, reader)
         elif format == 'json':
-            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r')
-            return tap_spreadsheets_anywhere.json_handler.get_row_iterator(table_spec, reader)
+            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding)
+            iterator = tap_spreadsheets_anywhere.json_handler.get_row_iterator(table_spec, reader)
+        elif format == 'jsonl':
+            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding)
+            iterator = tap_spreadsheets_anywhere.jsonl_handler.get_row_iterator(table_spec, reader)
     except (ValueError,TypeError) as err:
         raise InvalidFormatError(uri,message=err)
 
+    for _ in range(skip_initial):
+        next(iterator)
+
+    return iterator

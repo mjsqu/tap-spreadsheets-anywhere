@@ -1,6 +1,4 @@
-import cgi
 import re
-from urllib.parse import unquote
 
 import pytz
 from datetime import datetime, timezone
@@ -8,7 +6,6 @@ from datetime import datetime, timezone
 import dateutil
 import requests
 import singer
-from singer.transform import Transformer
 import boto3
 from google.cloud import storage
 import os, logging
@@ -16,7 +13,8 @@ from os import walk
 import tap_spreadsheets_anywhere.format_handler
 import tap_spreadsheets_anywhere.conversion as conversion
 import smart_open.ssh as ssh_transport
-from dateutil.parser import parse as parsedate
+from azure.storage.blob import BlobServiceClient
+import smart_open.ftp as ftp_transport
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +29,14 @@ def resolve_target_uri(table_spec, target_filename):
         return table_spec['path'] + "/" + target_filename
 
 
+def _hide_credentials(path):
+    import re
+    if path.startswith('sftp'):
+        return re.sub('sftp://.*?@', "********", path, flags=re.DOTALL)
+    elif path.startswith('ftp'):
+        return re.sub('ftp://.*?@', "********", path, flags=re.DOTALL)
+    return path
+
 
 def write_file(target_filename, table_spec, schema, max_records=-1):
     LOGGER.info('Syncing file "{}".'.format(target_filename))
@@ -40,7 +46,7 @@ def write_file(target_filename, table_spec, schema, max_records=-1):
         iterator = tap_spreadsheets_anywhere.format_handler.get_row_iterator(table_spec, target_uri)
         for row in iterator:
             metadata = {
-                '_smart_source_bucket': table_spec['path'],
+                '_smart_source_bucket': _hide_credentials(table_spec['path']),
                 '_smart_source_file': target_filename,
                 # index zero, +1 for header row
                 '_smart_source_lineno': records_synced + 2
@@ -126,10 +132,14 @@ def get_matching_objects(table_spec, modified_since=None):
         target_objects = list_files_in_local_bucket(bucket, table_spec.get('search_prefix'))
     elif protocol in ["sftp"]:
         target_objects = list_files_in_SSH_bucket(table_spec['path'],table_spec.get('search_prefix'))
+    elif protocol in ["ftp"]:
+        target_objects = list_files_in_ftp_server(table_spec['path'],table_spec.get('search_prefix'))
     elif protocol in ["gs"]:
         target_objects = list_files_in_gs_bucket(bucket,table_spec.get('search_prefix'))
     elif protocol in ["http", "https"]:
         target_objects = convert_URL_to_file_list(table_spec)
+    elif protocol in ["azure"]:
+        target_objects = list_files_in_azure_bucket(bucket,table_spec.get('search_prefix'))
     else:
         raise ValueError("Protocol {} not yet supported. Pull Requests are welcome!")
 
@@ -214,6 +224,27 @@ def convert_URL_to_file_list(table_spec):
         raise ValueError(f"Configured URL {url} could not be read.")
 
 
+def list_files_in_ftp_server(uri, search_prefix=None):
+    parsed_uri = ftp_transport.parse_uri(uri)
+    uri_path = parsed_uri.pop('uri_path')
+    secure_conn = True if parsed_uri["scheme"] == "ftps" else False
+    ftp = ftp_transport._connect(parsed_uri['host'], parsed_uri['user'], parsed_uri['port'], parsed_uri['password'], secure_conn, transport_params={})
+    entries = []
+    max_results = 10000
+    from stat import S_ISREG
+    import fnmatch
+    for row in ftp.mlsd(uri_path):
+        if search_prefix is None or fnmatch.fnmatch(entry[0],search_prefix):
+            if row[1]['type'] == 'file':
+                entries.append({'Key':row[0],'LastModified':datetime.strptime(row[1]['modify'], '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)})
+            if len(entries) > max_results:
+                raise print(f"Read more than {max_results} records from the path {uri_path}. Use a more specific "
+                             f"search_prefix")
+
+    LOGGER.info("Found {} files.".format(entries))
+    return entries
+
+
 def list_files_in_local_bucket(bucket, search_prefix=None):
     local_filenames = []
     path = bucket
@@ -225,7 +256,7 @@ def list_files_in_local_bucket(bucket, search_prefix=None):
     for (dirpath, dirnames, filenames) in walk(path):
         for filename in filenames:
             abspath = os.path.join(dirpath,filename)
-            relpath = os.path.split(abspath)[1]
+            relpath = os.path.relpath(abspath, path)
             local_filenames.append(relpath)
         if len(local_filenames) > max_results:
             raise ValueError(f"Read more than {max_results} records from the path {path}. Use a more specific "
@@ -248,6 +279,14 @@ def list_files_in_gs_bucket(bucket, search_prefix=None):
     LOGGER.info("Found {} files.".format(len(target_objects)))
 
     return target_objects
+
+def list_files_in_azure_bucket(container_name, search_prefix=None):
+    sas_key = os.environ['AZURE_STORAGE_CONNECTION_STRING']
+    blob_service_client = BlobServiceClient.from_connection_string(sas_key)
+    container_client = blob_service_client.get_container_client(container_name)
+    blob_iterator = container_client.list_blobs(name_starts_with=search_prefix)
+    return [{'Key': blob.name, 'LastModified': blob.last_modified} for blob in blob_iterator if blob.size > 0]
+
 
 
 def list_files_in_s3_bucket(bucket, search_prefix=None):
@@ -313,6 +352,7 @@ def config_by_crawl(crawl_config):
                         "pattern": abs_pattern,
                         "key_properties": [],
                         "format": "detect",
+                        "encoding": source.get('encoding', 'utf-8'),
                         "invalid_format_action": "ignore",
                         "delimiter": "detect",
                         "max_records_per_run": source.get('max_records_per_run',-1),
@@ -320,6 +360,7 @@ def config_by_crawl(crawl_config):
                         "max_sampling_read": source.get('max_sampling_read', 1000),
                         "universal_newlines": source.get('universal_newlines', True),
                         "prefer_number_vs_integer": source.get('prefer_number_vs_integer', False),
+                        "prefer_schema_as_string": source.get('prefer_schema_as_string', False),
                         "start_date": modified_since.isoformat()
                     }
                 elif abs_pattern != entries[table]["pattern"]:
@@ -333,6 +374,7 @@ def config_by_crawl(crawl_config):
                             "pattern": abs_pattern,
                             "key_properties": [],
                             "format": "detect",
+                            "encoding": source.get('encoding', 'utf-8'),
                             "invalid_format_action": "ignore",
                             "delimiter": "detect",
                             "max_records_per_run": source.get('max_records_per_run', -1),
@@ -340,6 +382,7 @@ def config_by_crawl(crawl_config):
                             "max_sampling_read": source.get('max_sampling_read', 1000),
                             "universal_newlines": source.get('universal_newlines', True),
                             "prefer_number_vs_integer": source.get('prefer_number_vs_integer', False),
+                            "prefer_schema_as_string": source.get('prefer_schema_as_string', False),
                             "start_date": modified_since.isoformat()
                         }
 

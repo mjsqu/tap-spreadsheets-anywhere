@@ -24,6 +24,7 @@ TEST_TABLE_SPEC = {
             "key_properties": ["id"],
             "format": "csv",
             "prefer_number_vs_integer": True,
+            "prefer_schema_as_string": True,
             "universal_newlines": False,
             "sample_rate": 5,
             "max_sampling_read": 2000,
@@ -190,7 +191,7 @@ class TestFormatHandler(unittest.TestCase):
         iterator = get_row_iterator(TEST_TABLE_SPEC['tables'][5], target_uri)
 
         row = next(iterator)
-        self.assertTrue( row['1976'] == '1976', "Row did not contain expected data")
+        self.assertTrue( row['year'] == '1976', "Row did not contain expected data")
 
     def test_renamed_https_object(self):
         table_spec = TEST_TABLE_SPEC['tables'][6]
