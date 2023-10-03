@@ -157,10 +157,11 @@ def get_row_iterator(table_spec, uri):
             reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding)
             iterator = tap_spreadsheets_anywhere.csv_handler.get_row_iterator(table_spec, reader)
         elif format == 'excel':
-            reader = get_streamreader(uri, universal_newlines=universal_newlines,newline=None, open_mode='rb')
             if uri.lower().endswith(".xls"):
+                reader = get_streamreader(uri, universal_newlines=universal_newlines,newline=None, open_mode='rb')
                 iterator = tap_spreadsheets_anywhere.excel_handler.get_legacy_row_iterator(table_spec, reader)
             else:
+                reader = get_streamreader(uri, universal_newlines=universal_newlines,newline=None, open_mode='rb', encoding=None) # Adding encoding `None` to ensure smart_open will use binary mode
                 iterator = tap_spreadsheets_anywhere.excel_handler.get_row_iterator(table_spec, reader)
         elif format == 'json':
             reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding)
