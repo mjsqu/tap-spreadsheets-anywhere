@@ -49,8 +49,10 @@ def get_legacy_row_iterator(table_spec, file_handle):
                         ):
                         columns.append(cell)
             
-            if table_spec.get('max_row') and 
-              row_number + 1 > table_spec.get('max_row',0):
+            if (
+                table_spec.get('max_row') and 
+                row_number + 1 > table_spec.get('max_row',0)
+            ):
                 return to_return
                 break
     
